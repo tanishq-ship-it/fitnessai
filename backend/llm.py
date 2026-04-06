@@ -1,0 +1,52 @@
+import json
+from collections.abc import AsyncGenerator
+
+import httpx
+
+from config import settings
+
+SYSTEM_PROMPT = """You are FitnessAI, an expert fitness coach and nutritionist. You give clear, actionable advice about workouts, nutrition, recovery, and general health.
+
+Guidelines:
+- Be concise but thorough. Use bullet points and bold text for structure.
+- Ask clarifying questions when the user's goal or situation is unclear.
+- Always prioritize safety — recommend consulting a doctor for injuries or medical conditions.
+- Be motivating and supportive, never judgmental.
+- When giving workout plans, specify sets, reps, and rest periods.
+- When giving nutrition advice, include specific amounts (grams of protein, calories, etc.)."""
+
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+
+async def stream_chat_response(
+    messages: list[dict],
+) -> AsyncGenerator[str, None]:
+    """Stream tokens from OpenRouter. Yields content strings as they arrive."""
+
+    payload = {
+        "model": settings.OPENROUTER_MODEL,
+        "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *messages],
+        "stream": True,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        async with client.stream("POST", OPENROUTER_URL, json=payload, headers=headers) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:]
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                    token = chunk["choices"][0]["delta"].get("content", "")
+                    if token:
+                        yield token
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    continue
