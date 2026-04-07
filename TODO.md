@@ -27,10 +27,10 @@
 - [ ] Store conversation state locally for offline access
 
 ## 5. Mem0 - Memory Layer (Production)
-- [ ] Set up Mem0 instance (self-hosted or cloud)
-- [ ] Integrate Mem0 SDK into the backend service
-- [ ] Store user preferences, goals, and context after each conversation
-- [ ] Retrieve relevant memories before each LLM call and inject into prompt
+- [x] Set up Mem0 instance (self-hosted or cloud)
+- [x] Integrate Mem0 SDK into the backend service
+- [x] Store user preferences, goals, and context after each conversation
+- [x] Retrieve relevant memories before each LLM call and inject into prompt
 - [ ] Add memory management (update, delete stale memories)
 - [ ] Configure Mem0 for production (persistence, scaling, API keys)
 

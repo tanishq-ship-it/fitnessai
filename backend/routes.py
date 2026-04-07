@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 
@@ -7,6 +8,7 @@ from pydantic import BaseModel
 
 from database import save_message, get_messages
 from llm import stream_chat_response
+from memory import search_memories, store_memories
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +39,13 @@ async def chat(body: ChatRequest, request: Request):
         logger.exception("Failed to process chat request")
         return {"error": str(e)}
 
+    # Search memories for personalized context
+    memories_context = search_memories(body.message, body.conversation_id)
+
     async def event_stream():
         full_response = ""
         try:
-            async for token in stream_chat_response(history):
+            async for token in stream_chat_response(history, memories_context):
                 full_response += token
                 yield f"data: {json.dumps({'token': token})}\n\n"
         except Exception as e:
@@ -50,6 +55,18 @@ async def chat(body: ChatRequest, request: Request):
         if full_response:
             saved = await save_message(pool, body.conversation_id, "assistant", full_response)
             yield f"data: {json.dumps({'done': True, 'message_id': str(saved['id'])})}\n\n"
+
+            # Store memories in background (don't block the response)
+            loop = asyncio.get_event_loop()
+            loop.run_in_executor(
+                None,
+                store_memories,
+                [
+                    {"role": "user", "content": body.message},
+                    {"role": "assistant", "content": full_response},
+                ],
+                body.conversation_id,
+            )
         else:
             yield f"data: {json.dumps({'done': True})}\n\n"
 

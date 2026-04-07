@@ -5,7 +5,7 @@ import httpx
 
 from config import settings
 
-SYSTEM_PROMPT = """You are FitnessAI, an expert fitness coach and nutritionist. You give clear, actionable advice about workouts, nutrition, recovery, and general health.
+SYSTEM_PROMPT_BASE = """You are FitnessAI, an expert fitness coach and nutritionist. You give clear, actionable advice about workouts, nutrition, recovery, and general health.
 
 Guidelines:
 - Be concise but thorough. Use bullet points and bold text for structure.
@@ -15,17 +15,32 @@ Guidelines:
 - When giving workout plans, specify sets, reps, and rest periods.
 - When giving nutrition advice, include specific amounts (grams of protein, calories, etc.)."""
 
+MEMORIES_SECTION = """
+Here is what you remember about this user from previous messages:
+{memories}
+
+Use this context to personalize your response. Don't mention that you're recalling memories."""
+
+
+def build_system_prompt(memories_context: str = "") -> str:
+    if memories_context:
+        return SYSTEM_PROMPT_BASE + MEMORIES_SECTION.format(memories=memories_context)
+    return SYSTEM_PROMPT_BASE
+
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
 async def stream_chat_response(
     messages: list[dict],
+    memories_context: str = "",
 ) -> AsyncGenerator[str, None]:
     """Stream tokens from OpenRouter. Yields content strings as they arrive."""
 
+    system_prompt = build_system_prompt(memories_context)
+
     payload = {
         "model": settings.OPENROUTER_MODEL,
-        "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *messages],
+        "messages": [{"role": "system", "content": system_prompt}, *messages],
         "stream": True,
     }
 

@@ -5,8 +5,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     OPENROUTER_API_KEY: str
-    OPENROUTER_MODEL: str = "meta-llama/llama-4-maverick"
+    OPENROUTER_MODEL: str = "google/gemma-4-31b-it"
     DATABASE_URL: str
+    DIRECT_URL: str = ""
+    OPENAI_API_KEY: str = ""
     FRONTEND_URL: str = "http://localhost:8081"
 
 
