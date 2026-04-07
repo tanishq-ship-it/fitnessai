@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     DIRECT_URL: str = ""
     OPENAI_API_KEY: str = ""
     FRONTEND_URL: str = "http://localhost:8081"
+    JWT_SECRET: str = ""
 
 
 settings = Settings()

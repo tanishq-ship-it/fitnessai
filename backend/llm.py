@@ -30,6 +30,39 @@ def build_system_prompt(memories_context: str = "") -> str:
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
+async def generate_title(user_message: str) -> str:
+    """Generate a 1-3 word conversation title from the user's first message."""
+    payload = {
+        "model": settings.OPENROUTER_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": "Generate a short title (1-3 words max) for a chat conversation based on the user's message. Reply with ONLY the title, nothing else. No quotes, no punctuation, no explanation.",
+            },
+            {"role": "user", "content": user_message},
+        ],
+        "stream": False,
+        "max_tokens": 15,
+    }
+    headers = {
+        "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(OPENROUTER_URL, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            title = data["choices"][0]["message"]["content"].strip()
+            # Clean up: remove quotes, limit length
+            title = title.strip('"\'').strip()
+            # Cap at 3 words
+            words = title.split()
+            return " ".join(words[:3]) if words else "New Chat"
+    except Exception:
+        return "New Chat"
+
+
 async def stream_chat_response(
     messages: list[dict],
     memories_context: str = "",

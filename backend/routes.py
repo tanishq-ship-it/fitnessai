@@ -1,46 +1,187 @@
 import asyncio
 import json
 import logging
+import re
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from database import save_message, get_messages
-from llm import stream_chat_response
+from auth import (
+    create_access_token,
+    generate_refresh_token,
+    get_current_user,
+    hash_password,
+    hash_refresh_token,
+    verify_password,
+    REFRESH_TOKEN_EXPIRE_DAYS,
+)
+from database import (
+    create_conversation,
+    create_session,
+    create_user,
+    delete_session,
+    delete_user_session_by_token,
+    get_messages,
+    get_session_by_token_hash,
+    get_user_by_email,
+    get_user_conversations,
+    save_message,
+    update_conversation_title,
+    verify_conversation_ownership,
+)
+from llm import generate_title, stream_chat_response
 from memory import search_memories, store_memories
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+
+
+# ── Request/Response Models ──
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str
+
 
 class ChatRequest(BaseModel):
     message: str
-    conversation_id: str
+    conversation_id: str | None = None
 
+
+# ── Helper ──
+
+async def _create_token_pair(pool, user_id: str, email: str) -> dict:
+    refresh_token = generate_refresh_token()
+    expires_at = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    await create_session(pool, user_id, hash_refresh_token(refresh_token), expires_at)
+    access_token = create_access_token(user_id)
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "user": {"id": user_id, "email": email},
+    }
+
+
+# ── Health ──
 
 @router.get("/health")
 async def health():
     return {"status": "ok"}
 
 
-@router.post("/chat")
-async def chat(body: ChatRequest, request: Request):
+# ── Auth Endpoints ──
+
+@router.post("/auth/signup")
+async def signup(body: SignupRequest, request: Request):
     pool = request.app.state.db_pool
 
-    try:
-        # Save user message
-        await save_message(pool, body.conversation_id, "user", body.message)
+    if not EMAIL_REGEX.match(body.email):
+        raise HTTPException(400, "Invalid email format")
+    if len(body.password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
 
-        # Fetch conversation history for context
-        history = await get_messages(pool, body.conversation_id)
+    existing = await get_user_by_email(pool, body.email.lower())
+    if existing:
+        raise HTTPException(409, "Email already registered")
+
+    user = await create_user(pool, body.email.lower(), hash_password(body.password))
+    return await _create_token_pair(pool, str(user["id"]), user["email"])
+
+
+@router.post("/auth/login")
+async def login(body: LoginRequest, request: Request):
+    pool = request.app.state.db_pool
+
+    user = await get_user_by_email(pool, body.email.lower())
+    if not user or not verify_password(body.password, user["password_hash"]):
+        raise HTTPException(401, "Invalid credentials")
+
+    return await _create_token_pair(pool, str(user["id"]), user["email"])
+
+
+@router.post("/auth/refresh")
+async def refresh(body: RefreshRequest, request: Request):
+    pool = request.app.state.db_pool
+
+    token_hash = hash_refresh_token(body.refresh_token)
+    session = await get_session_by_token_hash(pool, token_hash)
+    if not session:
+        raise HTTPException(401, "Invalid refresh token")
+
+    if session["expires_at"].replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        await delete_session(pool, str(session["id"]))
+        raise HTTPException(401, "Refresh token expired")
+
+    # Token rotation: delete old session, create new one
+    await delete_session(pool, str(session["id"]))
+
+    user_id = str(session["user_id"])
+    # Fetch user email for response
+    user_row = await pool.fetchrow("SELECT email FROM users WHERE id = $1", session["user_id"])
+    if not user_row:
+        raise HTTPException(401, "User not found")
+
+    return await _create_token_pair(pool, user_id, user_row["email"])
+
+
+@router.post("/auth/logout")
+async def logout(body: LogoutRequest, request: Request, user: dict = Depends(get_current_user)):
+    pool = request.app.state.db_pool
+    token_hash = hash_refresh_token(body.refresh_token)
+    await delete_user_session_by_token(pool, user["user_id"], token_hash)
+    return {"status": "ok"}
+
+
+@router.get("/auth/me")
+async def me(user: dict = Depends(get_current_user)):
+    return {"id": user["user_id"], "email": user["email"]}
+
+
+# ── Chat ──
+
+@router.post("/chat")
+async def chat(body: ChatRequest, request: Request, user: dict = Depends(get_current_user)):
+    pool = request.app.state.db_pool
+    user_id = user["user_id"]
+
+    # Resolve or create conversation
+    is_new_conversation = False
+    if body.conversation_id:
+        if not await verify_conversation_ownership(pool, body.conversation_id, user_id):
+            raise HTTPException(403, "Not your conversation")
+        conversation_id = body.conversation_id
+    else:
+        conv = await create_conversation(pool, user_id)
+        conversation_id = str(conv["id"])
+        is_new_conversation = True
+
+    try:
+        await save_message(pool, conversation_id, "user", body.message)
+        history = await get_messages(pool, conversation_id)
     except Exception as e:
         logger.exception("Failed to process chat request")
         return {"error": str(e)}
 
-    # Search memories for personalized context
-    memories_context = search_memories(body.message, body.conversation_id)
+    # Search memories scoped to user (not conversation)
+    memories_context = search_memories(body.message, user_id)
 
     async def event_stream():
         full_response = ""
@@ -51,12 +192,19 @@ async def chat(body: ChatRequest, request: Request):
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
-        # Save the complete assistant message
         if full_response:
-            saved = await save_message(pool, body.conversation_id, "assistant", full_response)
-            yield f"data: {json.dumps({'done': True, 'message_id': str(saved['id'])})}\n\n"
+            saved = await save_message(pool, conversation_id, "assistant", full_response)
+            yield f"data: {json.dumps({'done': True, 'message_id': str(saved['id']), 'conversation_id': conversation_id})}\n\n"
 
-            # Store memories in background (don't block the response)
+            # Generate title for new conversations
+            if is_new_conversation:
+                try:
+                    title = await generate_title(body.message)
+                    await update_conversation_title(pool, conversation_id, title)
+                except Exception as e:
+                    logger.warning("Title generation failed: %s", e)
+
+            # Store memories scoped to user (not conversation)
             loop = asyncio.get_event_loop()
             loop.run_in_executor(
                 None,
@@ -65,9 +213,40 @@ async def chat(body: ChatRequest, request: Request):
                     {"role": "user", "content": body.message},
                     {"role": "assistant", "content": full_response},
                 ],
-                body.conversation_id,
+                user_id,
             )
         else:
-            yield f"data: {json.dumps({'done': True})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'conversation_id': conversation_id})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# ── Conversations ──
+
+@router.get("/conversations")
+async def list_conversations(request: Request, user: dict = Depends(get_current_user)):
+    pool = request.app.state.db_pool
+    conversations = await get_user_conversations(pool, user["user_id"])
+    return {
+        "conversations": [
+            {
+                "id": str(c["id"]),
+                "title": c["title"],
+                "created_at": c["created_at"].isoformat(),
+                "updated_at": c["updated_at"].isoformat(),
+            }
+            for c in conversations
+        ]
+    }
+
+
+@router.get("/conversations/{conversation_id}/messages")
+async def get_conversation_messages(
+    conversation_id: str, request: Request, user: dict = Depends(get_current_user)
+):
+    pool = request.app.state.db_pool
+    if not await verify_conversation_ownership(pool, conversation_id, user["user_id"]):
+        raise HTTPException(403, "Not your conversation")
+
+    messages = await get_messages(pool, conversation_id)
+    return {"messages": messages}

@@ -33,10 +33,10 @@ memory = Memory.from_config({
 })
 
 
-def search_memories(query: str, conversation_id: str, limit: int = 5) -> str:
+def search_memories(query: str, user_id: str, limit: int = 5) -> str:
     """Search relevant memories and return formatted string for prompt injection."""
     try:
-        results = memory.search(query=query, user_id=conversation_id, limit=limit)
+        results = memory.search(query=query, user_id=user_id, limit=limit)
         memories = results.get("results", [])
         if not memories:
             return ""
@@ -46,9 +46,9 @@ def search_memories(query: str, conversation_id: str, limit: int = 5) -> str:
         return ""
 
 
-def store_memories(messages: list[dict], conversation_id: str) -> None:
+def store_memories(messages: list[dict], user_id: str) -> None:
     """Extract and store facts from a conversation exchange."""
     try:
-        memory.add(messages, user_id=conversation_id)
+        memory.add(messages, user_id=user_id)
     except Exception as e:
         logger.warning("Memory store failed: %s", e)

@@ -1,23 +1,32 @@
 import { API_BASE_URL } from "@/src/constants/api";
+import { getValidAccessToken } from "@/src/services/auth-service";
 
 interface StreamCallbacks {
   onToken: (token: string) => void;
-  onDone: (messageId?: string) => void;
+  onDone: (messageId?: string, conversationId?: string) => void;
   onError: (error: Error) => void;
 }
 
-export function sendMessage(
+export async function sendMessage(
   message: string,
-  conversationId: string,
+  conversationId: string | null,
   callbacks: StreamCallbacks,
-): void {
+): Promise<void> {
+  let token: string;
+  try {
+    token = await getValidAccessToken();
+  } catch {
+    callbacks.onError(new Error("Session expired. Please log in again."));
+    return;
+  }
+
   const xhr = new XMLHttpRequest();
   let lastIndex = 0;
 
   xhr.open("POST", `${API_BASE_URL}/chat`);
   xhr.setRequestHeader("Content-Type", "application/json");
+  xhr.setRequestHeader("Authorization", `Bearer ${token}`);
 
-  // This fires progressively as chunks arrive
   xhr.onprogress = () => {
     const newData = xhr.responseText.slice(lastIndex);
     lastIndex = xhr.responseText.length;
@@ -30,7 +39,7 @@ export function sendMessage(
         if (parsed.token) {
           callbacks.onToken(parsed.token);
         } else if (parsed.done) {
-          callbacks.onDone(parsed.message_id);
+          callbacks.onDone(parsed.message_id, parsed.conversation_id);
         } else if (parsed.error) {
           callbacks.onError(new Error(parsed.error));
         }
@@ -41,6 +50,11 @@ export function sendMessage(
   };
 
   xhr.onload = () => {
+    if (xhr.status === 401) {
+      // Token may have expired between getValidAccessToken and request
+      callbacks.onError(new Error("Session expired. Please log in again."));
+      return;
+    }
     if (xhr.status !== 200) {
       callbacks.onError(new Error(`Server error: ${xhr.status}`));
     }
@@ -50,5 +64,10 @@ export function sendMessage(
     callbacks.onError(new Error("Network request failed"));
   };
 
-  xhr.send(JSON.stringify({ message, conversation_id: conversationId }));
+  xhr.send(
+    JSON.stringify({
+      message,
+      conversation_id: conversationId,
+    }),
+  );
 }

@@ -8,12 +8,55 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+model User {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email         String   @unique
+  password_hash String
+  created_at    DateTime @default(now()) @db.Timestamptz()
+  updated_at    DateTime @default(now()) @db.Timestamptz()
+
+  sessions      Session[]
+  conversations Conversation[]
+
+  @@map("users")
+}
+
+model Session {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id            String   @db.Uuid
+  refresh_token_hash String
+  expires_at         DateTime @db.Timestamptz()
+  created_at         DateTime @default(now()) @db.Timestamptz()
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([refresh_token_hash])
+  @@index([user_id])
+  @@map("sessions")
+}
+
+model Conversation {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String   @db.Uuid
+  title      String   @default("New Chat")
+  created_at DateTime @default(now()) @db.Timestamptz()
+  updated_at DateTime @default(now()) @db.Timestamptz()
+
+  user     User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@index([user_id, updated_at(sort: Desc)])
+  @@map("conversations")
+}
+
 model Message {
   id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   conversation_id String   @db.Uuid
   role            String
   content         String
   created_at      DateTime @default(now()) @db.Timestamptz()
+
+  conversation Conversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
 
   @@index([conversation_id, created_at])
   @@map("messages")
