@@ -141,32 +141,41 @@ def _format_relation(relation: dict[str, Any]) -> str | None:
 memory, GRAPH_MEMORY_ENABLED = _create_memory_client()
 
 
-def search_memories(query: str, user_id: str, limit: int = 5) -> str:
-    """Search relevant memories and graph relations for prompt injection."""
+def search_memories(
+    query: str,
+    user_id: str,
+    *,
+    limit: int = 5,
+    categories: list[str] | None = None,
+    rerank: bool = False,
+    enable_graph: bool | None = None,
+) -> dict[str, Any]:
+    """Search relevant memories and graph relations with optional filters."""
+    if not query.strip():
+        return {"results": [], "relations": []}
+
+    search_kwargs: dict[str, Any] = {"query": query, "user_id": user_id, "limit": limit}
+    if categories:
+        normalized = [category for category in (_normalize_category(item) for item in categories) if category]
+        if normalized:
+            search_kwargs["filters"] = {"category": {"in": normalized}}
+    if rerank:
+        search_kwargs["rerank"] = True
+    if enable_graph is None:
+        enable_graph = GRAPH_MEMORY_ENABLED
+    search_kwargs["enable_graph"] = enable_graph
+
     try:
-        results = memory.search(query=query, user_id=user_id, limit=limit)
-        memories = results.get("results", [])
-        relations = results.get("relations", []) if GRAPH_MEMORY_ENABLED else []
-
-        sections: list[str] = []
-        if memories:
-            sections.append(
-                "Relevant memories:\n"
-                + "\n".join(f"- {m['memory']}" for m in memories if m.get("memory"))
-            )
-
-        formatted_relations = [
-            formatted
-            for relation in relations
-            if (formatted := _format_relation(relation)) is not None
-        ]
-        if formatted_relations:
-            sections.append("Related facts:\n" + "\n".join(formatted_relations))
-
-        return "\n\n".join(sections)
+        results = _run_memory_search(search_kwargs)
+        memories = results.get("results", []) if isinstance(results, dict) else []
+        relations = results.get("relations", []) if isinstance(results, dict) else []
+        return {
+            "results": memories if isinstance(memories, list) else [],
+            "relations": relations if isinstance(relations, list) else [],
+        }
     except Exception as e:
         logger.warning("Memory search failed: %s", e)
-        return ""
+        return {"results": [], "relations": []}
 
 
 def store_memories(messages: list[dict], user_id: str) -> None:
@@ -187,10 +196,42 @@ def store_memories(messages: list[dict], user_id: str) -> None:
         logger.warning("Memory store failed: %s", e)
 
 
+def store_memory_entries(entries: list[dict[str, Any]], user_id: str) -> None:
+    """Store curated durable memories with optional category metadata."""
+    for entry in entries:
+        text = str(entry.get("text", "")).strip()
+        if not text:
+            continue
+
+        metadata = {}
+        category = _normalize_category(entry.get("category"))
+        if category:
+            metadata["category"] = category
+
+        payload = [{"role": "user", "content": text}]
+        add_kwargs: dict[str, Any] = {"user_id": user_id}
+        if metadata:
+            add_kwargs["metadata"] = metadata
+        if GRAPH_MEMORY_ENABLED:
+            add_kwargs["enable_graph"] = bool(entry.get("enable_graph", True))
+
+        try:
+            memory.add(payload, **add_kwargs)
+        except TypeError:
+            add_kwargs.pop("metadata", None)
+            add_kwargs.pop("enable_graph", None)
+            try:
+                memory.add(payload, **add_kwargs)
+            except Exception as e:
+                logger.warning("Curated memory store failed: %s", e)
+        except Exception as e:
+            logger.warning("Curated memory store failed: %s", e)
+
+
 def store_image_memory_facts(facts: list[str], user_id: str) -> None:
     """Persist only durable image-derived user facts."""
     try:
-        filtered_facts: list[dict[str, str]] = []
+        filtered_facts: list[dict[str, Any]] = []
         blocked_phrases = (
             "maybe",
             "might",
@@ -211,11 +252,45 @@ def store_image_memory_facts(facts: list[str], user_id: str) -> None:
             if any(phrase in lowered for phrase in blocked_phrases):
                 continue
 
-            filtered_facts.append({"role": "user", "content": cleaned})
+            filtered_facts.append(
+                {
+                    "text": cleaned,
+                    "category": "progress",
+                    "enable_graph": True,
+                }
+            )
 
         if not filtered_facts:
             return
 
-        memory.add(filtered_facts, user_id=user_id)
+        store_memory_entries(filtered_facts, user_id)
     except Exception as e:
         logger.warning("Image memory store failed: %s", e)
+
+
+def _normalize_category(value: Any) -> str:
+    cleaned = str(value or "").strip().lower().replace(" ", "_")
+    if not cleaned:
+        return ""
+    return "".join(char for char in cleaned if char.isalnum() or char == "_")
+
+
+def _run_memory_search(search_kwargs: dict[str, Any]) -> dict[str, Any]:
+    try:
+        results = memory.search(**search_kwargs)
+        return results if isinstance(results, dict) else {"results": [], "relations": []}
+    except TypeError:
+        fallback_kwargs = {
+            key: value
+            for key, value in search_kwargs.items()
+            if key not in {"filters", "rerank", "enable_graph"}
+        }
+        results = memory.search(**fallback_kwargs)
+        return results if isinstance(results, dict) else {"results": [], "relations": []}
+    except Exception:
+        if search_kwargs.get("rerank"):
+            fallback_kwargs = dict(search_kwargs)
+            fallback_kwargs.pop("rerank", None)
+            results = memory.search(**fallback_kwargs)
+            return results if isinstance(results, dict) else {"results": [], "relations": []}
+        raise

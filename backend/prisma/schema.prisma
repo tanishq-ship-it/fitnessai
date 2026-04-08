@@ -18,6 +18,12 @@ model User {
   sessions      Session[]
   conversations Conversation[]
   summaries     ConversationSummary[]
+  coachingProfile  UserCoachingProfile?
+  coachingEvents   CoachingEvent[]
+  coachingArtifacts CoachingArtifact[]
+  followUpState    FollowUpState?
+  proactiveTasks   ProactiveTask[]
+  coachingMetrics  CoachingMetric[]
 
   @@map("users")
 }
@@ -46,6 +52,10 @@ model Conversation {
   user     User                 @relation(fields: [user_id], references: [id], onDelete: Cascade)
   messages Message[]
   summary  ConversationSummary?
+  coachingEvents   CoachingEvent[]
+  coachingArtifacts CoachingArtifact[]
+  proactiveTasks   ProactiveTask[]
+  coachingMetrics  CoachingMetric[]
 
   @@index([user_id, updated_at(sort: Desc)])
   @@map("conversations")
@@ -78,4 +88,100 @@ model ConversationSummary {
 
   @@index([user_id, updated_at(sort: Desc)])
   @@map("conversation_summaries")
+}
+
+model UserCoachingProfile {
+  user_id     String   @id @db.Uuid
+  profile_json Json    @default("{}")
+  created_at  DateTime @default(now()) @db.Timestamptz()
+  updated_at  DateTime @default(now()) @db.Timestamptz()
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@map("user_coaching_profiles")
+}
+
+model CoachingEvent {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String   @db.Uuid
+  conversation_id String?  @db.Uuid
+  event_type      String
+  summary         String   @default("")
+  event_time      DateTime? @db.Timestamptz()
+  details_json    Json     @default("{}")
+  created_at      DateTime @default(now()) @db.Timestamptz()
+
+  user         User         @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversation_id], references: [id], onDelete: SetNull)
+
+  @@index([user_id, created_at(sort: Desc)])
+  @@index([user_id, event_type, created_at(sort: Desc)])
+  @@map("coaching_events")
+}
+
+model CoachingArtifact {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String   @db.Uuid
+  conversation_id String?  @db.Uuid
+  artifact_type   String
+  title           String   @default("")
+  content_markdown String  @default("")
+  metadata_json   Json     @default("{}")
+  created_at      DateTime @default(now()) @db.Timestamptz()
+  updated_at      DateTime @default(now()) @db.Timestamptz()
+
+  user         User         @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversation_id], references: [id], onDelete: SetNull)
+
+  @@index([user_id, created_at(sort: Desc)])
+  @@map("coaching_artifacts")
+}
+
+model FollowUpState {
+  user_id             String   @id @db.Uuid
+  pending_question    String   @default("")
+  missing_fields_json Json     @default("[]")
+  last_asked_at       DateTime? @db.Timestamptz()
+  last_answered_at    DateTime? @db.Timestamptz()
+  created_at          DateTime @default(now()) @db.Timestamptz()
+  updated_at          DateTime @default(now()) @db.Timestamptz()
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@map("follow_up_states")
+}
+
+model ProactiveTask {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String   @db.Uuid
+  conversation_id String?  @db.Uuid
+  task_type       String
+  status          String   @default("open")
+  due_at          DateTime? @db.Timestamptz()
+  summary         String   @default("")
+  payload_json    Json     @default("{}")
+  created_at      DateTime @default(now()) @db.Timestamptz()
+  updated_at      DateTime @default(now()) @db.Timestamptz()
+
+  user         User         @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversation_id], references: [id], onDelete: SetNull)
+
+  @@index([user_id, status, due_at(sort: Asc)])
+  @@map("proactive_tasks")
+}
+
+model CoachingMetric {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String   @db.Uuid
+  conversation_id String?  @db.Uuid
+  metric_type     String
+  model_name      String   @default("")
+  payload_json    Json     @default("{}")
+  created_at      DateTime @default(now()) @db.Timestamptz()
+
+  user         User         @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversation_id], references: [id], onDelete: SetNull)
+
+  @@index([user_id, created_at(sort: Desc)])
+  @@map("coaching_metrics")
 }

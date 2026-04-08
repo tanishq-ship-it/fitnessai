@@ -32,6 +32,84 @@ async def ensure_schema(pool: asyncpg.Pool) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_conversation_summaries_user_updated_at
             ON conversation_summaries(user_id, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS user_coaching_profiles (
+            user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            profile_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
+        CREATE TABLE IF NOT EXISTS coaching_events (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
+            event_type TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            event_time TIMESTAMPTZ NULL,
+            details_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_coaching_events_user_created_at
+            ON coaching_events(user_id, created_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_coaching_events_user_type_created_at
+            ON coaching_events(user_id, event_type, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS coaching_artifacts (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
+            artifact_type TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            content_markdown TEXT NOT NULL DEFAULT '',
+            metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_coaching_artifacts_user_created_at
+            ON coaching_artifacts(user_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS follow_up_states (
+            user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            pending_question TEXT NOT NULL DEFAULT '',
+            missing_fields_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+            last_asked_at TIMESTAMPTZ NULL,
+            last_answered_at TIMESTAMPTZ NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
+        CREATE TABLE IF NOT EXISTS proactive_tasks (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
+            task_type TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open',
+            due_at TIMESTAMPTZ NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_proactive_tasks_user_status_due_at
+            ON proactive_tasks(user_id, status, due_at ASC);
+
+        CREATE TABLE IF NOT EXISTS coaching_metrics (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
+            metric_type TEXT NOT NULL,
+            model_name TEXT NOT NULL DEFAULT '',
+            payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_coaching_metrics_user_created_at
+            ON coaching_metrics(user_id, created_at DESC);
         """
     )
 
@@ -233,6 +311,293 @@ async def get_recent_conversation_summaries(
         *params,
     )
     return [dict(r) for r in rows]
+
+
+async def get_user_coaching_profile(pool: asyncpg.Pool, user_id: str) -> dict | None:
+    row = await pool.fetchrow(
+        """
+        SELECT user_id, profile_json, created_at, updated_at
+        FROM user_coaching_profiles
+        WHERE user_id = $1
+        """,
+        uuid.UUID(user_id),
+    )
+    return dict(row) if row else None
+
+
+async def upsert_user_coaching_profile(
+    pool: asyncpg.Pool,
+    user_id: str,
+    profile_json: dict[str, Any],
+) -> dict:
+    row = await pool.fetchrow(
+        """
+        INSERT INTO user_coaching_profiles (user_id, profile_json)
+        VALUES ($1, $2::jsonb)
+        ON CONFLICT (user_id)
+        DO UPDATE SET
+            profile_json = EXCLUDED.profile_json,
+            updated_at = now()
+        RETURNING user_id, profile_json, created_at, updated_at
+        """,
+        uuid.UUID(user_id),
+        json.dumps(profile_json),
+    )
+    return dict(row)
+
+
+async def get_recent_coaching_events(
+    pool: asyncpg.Pool,
+    user_id: str,
+    *,
+    event_types: list[str] | None = None,
+    limit: int = 6,
+) -> list[dict]:
+    if event_types:
+        rows = await pool.fetch(
+            """
+            SELECT id, user_id, conversation_id, event_type, summary, event_time, details_json, created_at
+            FROM coaching_events
+            WHERE user_id = $1 AND event_type = ANY($2::text[])
+            ORDER BY COALESCE(event_time, created_at) DESC
+            LIMIT $3
+            """,
+            uuid.UUID(user_id),
+            event_types,
+            limit,
+        )
+    else:
+        rows = await pool.fetch(
+            """
+            SELECT id, user_id, conversation_id, event_type, summary, event_time, details_json, created_at
+            FROM coaching_events
+            WHERE user_id = $1
+            ORDER BY COALESCE(event_time, created_at) DESC
+            LIMIT $2
+            """,
+            uuid.UUID(user_id),
+            limit,
+        )
+    return [dict(r) for r in rows]
+
+
+async def insert_coaching_events(
+    pool: asyncpg.Pool,
+    user_id: str,
+    conversation_id: str,
+    events: list[dict[str, Any]],
+) -> list[dict]:
+    inserted: list[dict] = []
+    for event in events:
+        row = await pool.fetchrow(
+            """
+            INSERT INTO coaching_events (
+                user_id,
+                conversation_id,
+                event_type,
+                summary,
+                event_time,
+                details_json
+            )
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+            RETURNING id, user_id, conversation_id, event_type, summary, event_time, details_json, created_at
+            """,
+            uuid.UUID(user_id),
+            uuid.UUID(conversation_id),
+            event.get("event_type") or "check_in",
+            event.get("summary") or "",
+            event.get("event_time"),
+            json.dumps(event.get("details") or {}),
+        )
+        inserted.append(dict(row))
+    return inserted
+
+
+async def create_coaching_artifact(
+    pool: asyncpg.Pool,
+    user_id: str,
+    conversation_id: str,
+    artifact_type: str,
+    title: str,
+    content_markdown: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict:
+    row = await pool.fetchrow(
+        """
+        INSERT INTO coaching_artifacts (
+            user_id,
+            conversation_id,
+            artifact_type,
+            title,
+            content_markdown,
+            metadata_json
+        )
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+        RETURNING id, user_id, conversation_id, artifact_type, title, content_markdown, metadata_json, created_at, updated_at
+        """,
+        uuid.UUID(user_id),
+        uuid.UUID(conversation_id),
+        artifact_type,
+        title,
+        content_markdown,
+        json.dumps(metadata or {}),
+    )
+    return dict(row)
+
+
+async def get_follow_up_state(pool: asyncpg.Pool, user_id: str) -> dict | None:
+    row = await pool.fetchrow(
+        """
+        SELECT user_id, pending_question, missing_fields_json, last_asked_at, last_answered_at, created_at, updated_at
+        FROM follow_up_states
+        WHERE user_id = $1
+        """,
+        uuid.UUID(user_id),
+    )
+    return dict(row) if row else None
+
+
+async def upsert_follow_up_state(
+    pool: asyncpg.Pool,
+    user_id: str,
+    pending_question: str,
+    missing_fields: list[str],
+    *,
+    last_asked_at: datetime | None = None,
+    last_answered_at: datetime | None = None,
+) -> dict:
+    row = await pool.fetchrow(
+        """
+        INSERT INTO follow_up_states (
+            user_id,
+            pending_question,
+            missing_fields_json,
+            last_asked_at,
+            last_answered_at
+        )
+        VALUES ($1, $2, $3::jsonb, $4, $5)
+        ON CONFLICT (user_id)
+        DO UPDATE SET
+            pending_question = EXCLUDED.pending_question,
+            missing_fields_json = EXCLUDED.missing_fields_json,
+            last_asked_at = EXCLUDED.last_asked_at,
+            last_answered_at = EXCLUDED.last_answered_at,
+            updated_at = now()
+        RETURNING user_id, pending_question, missing_fields_json, last_asked_at, last_answered_at, created_at, updated_at
+        """,
+        uuid.UUID(user_id),
+        pending_question,
+        json.dumps(missing_fields),
+        last_asked_at,
+        last_answered_at,
+    )
+    return dict(row)
+
+
+async def clear_follow_up_state(pool: asyncpg.Pool, user_id: str, *, answered_at: datetime | None = None) -> None:
+    await pool.execute(
+        """
+        INSERT INTO follow_up_states (
+            user_id,
+            pending_question,
+            missing_fields_json,
+            last_asked_at,
+            last_answered_at
+        )
+        VALUES ($1, '', '[]'::jsonb, NULL, $2)
+        ON CONFLICT (user_id)
+        DO UPDATE SET
+            pending_question = '',
+            missing_fields_json = '[]'::jsonb,
+            last_answered_at = $2,
+            updated_at = now()
+        """,
+        uuid.UUID(user_id),
+        answered_at,
+    )
+
+
+async def create_proactive_tasks(
+    pool: asyncpg.Pool,
+    user_id: str,
+    conversation_id: str,
+    tasks: list[dict[str, Any]],
+) -> list[dict]:
+    created: list[dict] = []
+    for task in tasks:
+        row = await pool.fetchrow(
+            """
+            INSERT INTO proactive_tasks (
+                user_id,
+                conversation_id,
+                task_type,
+                status,
+                due_at,
+                summary,
+                payload_json
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+            RETURNING id, user_id, conversation_id, task_type, status, due_at, summary, payload_json, created_at, updated_at
+            """,
+            uuid.UUID(user_id),
+            uuid.UUID(conversation_id),
+            task.get("task_type") or "checkin",
+            task.get("status") or "open",
+            task.get("due_at"),
+            task.get("summary") or "",
+            json.dumps(task.get("payload") or {}),
+        )
+        created.append(dict(row))
+    return created
+
+
+async def get_open_proactive_tasks(
+    pool: asyncpg.Pool,
+    user_id: str,
+    *,
+    limit: int = 5,
+) -> list[dict]:
+    rows = await pool.fetch(
+        """
+        SELECT id, user_id, conversation_id, task_type, status, due_at, summary, payload_json, created_at, updated_at
+        FROM proactive_tasks
+        WHERE user_id = $1 AND status = 'open'
+        ORDER BY COALESCE(due_at, created_at) ASC
+        LIMIT $2
+        """,
+        uuid.UUID(user_id),
+        limit,
+    )
+    return [dict(r) for r in rows]
+
+
+async def create_coaching_metric(
+    pool: asyncpg.Pool,
+    user_id: str,
+    conversation_id: str,
+    metric_type: str,
+    model_name: str,
+    payload: dict[str, Any],
+) -> dict:
+    row = await pool.fetchrow(
+        """
+        INSERT INTO coaching_metrics (
+            user_id,
+            conversation_id,
+            metric_type,
+            model_name,
+            payload_json
+        )
+        VALUES ($1, $2, $3, $4, $5::jsonb)
+        RETURNING id, user_id, conversation_id, metric_type, model_name, payload_json, created_at
+        """,
+        uuid.UUID(user_id),
+        uuid.UUID(conversation_id),
+        metric_type,
+        model_name,
+        json.dumps(payload),
+    )
+    return dict(row)
 
 
 # ── Message operations ──
