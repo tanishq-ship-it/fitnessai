@@ -2,7 +2,7 @@ import { View, Text } from "react-native";
 import Animated, { FadeInUp } from "react-native-reanimated";
 import { Image } from "expo-image";
 import { Message } from "@/src/types/chat";
-import { parseMarkdown } from "@/src/utils/parse-markdown";
+import { ChatMarkdown } from "@/src/utils/parse-markdown";
 
 interface MessageBubbleProps {
   message: Message;
@@ -26,7 +26,7 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
             />
           ) : null}
           {message.content ? (
-            <Text style={{ fontSize: 13 }} className="text-white font-semibold leading-relaxed">
+            <Text style={{ fontSize: 12, lineHeight: 18 }} className="text-white font-semibold">
               {message.content}
             </Text>
           ) : null}
@@ -41,7 +41,7 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
       entering={FadeInUp.duration(400).springify()}
       className="mb-2 px-5 pt-3"
     >
-      {parseMarkdown(message.content)}
+      <ChatMarkdown content={message.content} />
     </Animated.View>
   );
 }
