@@ -116,6 +116,8 @@ export default function ChatInput({ onSend }: ChatInputProps) {
           value={text}
           onChangeText={setText}
           multiline
+          blurOnSubmit={false}
+          submitBehavior="submit"
           onSubmitEditing={handleSend}
         />
 
