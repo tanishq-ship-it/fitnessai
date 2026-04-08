@@ -89,7 +89,7 @@ export default function ChatScreen() {
             <ActivityIndicator size="large" color="#00D9C0" />
           </View>
         ) : messages.length === 0 ? (
-          <EmptyChat />
+          <EmptyChat onSuggestionPress={(text) => handleSend({ text })} />
         ) : (
           <FlatList
             ref={flatListRef}

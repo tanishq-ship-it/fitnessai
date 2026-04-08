@@ -12,6 +12,7 @@ import {
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import LottieView from "lottie-react-native";
 import AuroraBackground from "@/src/components/ui/aurora-background";
 import { useAuth } from "@/src/contexts/auth-context";
 
@@ -60,8 +61,13 @@ export default function LoginScreen() {
           <View className="px-8">
             {/* Logo */}
             <View className="items-center mb-10">
-              <View className="w-16 h-16 rounded-full bg-aqua/10 items-center justify-center mb-5">
-                <Ionicons name="fitness" size={32} color="#00D9C0" />
+              <View className="w-20 h-20 items-center justify-center mb-5">
+                <LottieView
+                  source={require("@/assets/lootie/Sweet run cycle.json")}
+                  autoPlay
+                  loop
+                  style={{ width: 80, height: 80 }}
+                />
               </View>
               <Text className="text-white text-3xl font-extrabold tracking-tight mb-1">
                 Welcome Back

@@ -12,8 +12,8 @@ interface ChatMarkdownProps {
   content: string;
 }
 
-const BODY_FONT_SIZE = 12;
-const BODY_LINE_HEIGHT = 20;
+const BODY_FONT_SIZE = 15;
+const BODY_LINE_HEIGHT = 22;
 
 const MONO_FONT = Platform.select({
   ios: "Menlo",
@@ -51,8 +51,8 @@ const markdownStyles: MarkedStyles = {
   },
   h1: {
     color: "#FFFFFF",
-    fontSize: 20,
-    lineHeight: 28,
+    fontSize: 15,
+    lineHeight: 22,
     fontWeight: "700",
     marginTop: 6,
     marginBottom: 10,
@@ -61,8 +61,8 @@ const markdownStyles: MarkedStyles = {
   },
   h2: {
     color: "#FFFFFF",
-    fontSize: 18,
-    lineHeight: 26,
+    fontSize: 15,
+    lineHeight: 22,
     fontWeight: "700",
     marginTop: 6,
     marginBottom: 10,
@@ -79,24 +79,24 @@ const markdownStyles: MarkedStyles = {
   },
   h4: {
     color: "#FFFFFF",
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 15,
+    lineHeight: 22,
     fontWeight: "700",
     marginTop: 4,
     marginBottom: 6,
   },
   h5: {
     color: "#FFFFFF",
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 15,
+    lineHeight: 22,
     fontWeight: "700",
     marginTop: 4,
     marginBottom: 6,
   },
   h6: {
     color: "rgba(255, 255, 255, 0.78)",
-    fontSize: 12,
-    lineHeight: 18,
+    fontSize: 15,
+    lineHeight: 22,
     fontWeight: "700",
     marginTop: 4,
     marginBottom: 6,

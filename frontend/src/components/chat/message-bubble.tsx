@@ -26,7 +26,7 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
             />
           ) : null}
           {message.content ? (
-            <Text style={{ fontSize: 12, lineHeight: 18 }} className="text-white font-semibold">
+            <Text style={{ fontSize: 15, lineHeight: 22 }} className="text-white font-semibold">
               {message.content}
             </Text>
           ) : null}
