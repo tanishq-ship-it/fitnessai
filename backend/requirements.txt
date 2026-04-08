@@ -5,6 +5,9 @@ asyncpg==0.30.0
 pydantic-settings==2.5.2
 python-dotenv==1.0.1
 mem0ai==1.0.11
+langchain-neo4j>=0.4.0
+neo4j>=5.23.1
+rank-bm25>=0.2.2
 psycopg[pool]==3.2.4
 openai>=1.90.0
 bcrypt==4.3.0

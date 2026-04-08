@@ -23,15 +23,23 @@ from database import (
     create_user,
     delete_session,
     delete_user_session_by_token,
+    get_conversation_summary,
     get_messages,
+    get_recent_conversation_summaries,
     get_session_by_token_hash,
     get_user_by_email,
     get_user_conversations,
     save_message,
+    upsert_conversation_summary,
     update_conversation_title,
     verify_conversation_ownership,
 )
-from llm import generate_title, stream_chat_response
+from llm import (
+    format_recent_summaries,
+    generate_conversation_summary,
+    generate_title,
+    stream_chat_response,
+)
 from memory import search_memories, store_memories
 
 logger = logging.getLogger(__name__)
@@ -78,6 +86,36 @@ async def _create_token_pair(pool, user_id: str, email: str) -> dict:
         "refresh_token": refresh_token,
         "user": {"id": user_id, "email": email},
     }
+
+
+async def _persist_long_term_context(
+    pool,
+    user_id: str,
+    conversation_id: str,
+    exchange_messages: list[dict],
+) -> None:
+    try:
+        await asyncio.to_thread(store_memories, exchange_messages, user_id)
+    except Exception as e:
+        logger.warning("Mem0 persistence failed: %s", e)
+
+    try:
+        history = await get_messages(pool, conversation_id)
+        existing_summary = await get_conversation_summary(pool, conversation_id)
+        summary_payload = await generate_conversation_summary(
+            history,
+            previous_summary=existing_summary["summary"] if existing_summary else "",
+        )
+        await upsert_conversation_summary(
+            pool,
+            user_id,
+            conversation_id,
+            summary_payload["summary"],
+            summary_payload["key_points"],
+            summary_payload["next_steps"],
+        )
+    except Exception as e:
+        logger.warning("Conversation summary persistence failed: %s", e)
 
 
 # ── Health ──
@@ -176,17 +214,24 @@ async def chat(body: ChatRequest, request: Request, user: dict = Depends(get_cur
     try:
         await save_message(pool, conversation_id, "user", body.message)
         history = await get_messages(pool, conversation_id)
+        recent_summaries = await get_recent_conversation_summaries(
+            pool,
+            user_id,
+            exclude_conversation_id=conversation_id,
+            limit=3,
+        )
     except Exception as e:
         logger.exception("Failed to process chat request")
         return {"error": str(e)}
 
     # Search memories scoped to user (not conversation)
     memories_context = search_memories(body.message, user_id)
+    summaries_context = format_recent_summaries(recent_summaries)
 
     async def event_stream():
         full_response = ""
         try:
-            async for token in stream_chat_response(history, memories_context):
+            async for token in stream_chat_response(history, memories_context, summaries_context):
                 full_response += token
                 yield f"data: {json.dumps({'token': token})}\n\n"
         except Exception as e:
@@ -194,7 +239,6 @@ async def chat(body: ChatRequest, request: Request, user: dict = Depends(get_cur
 
         if full_response:
             saved = await save_message(pool, conversation_id, "assistant", full_response)
-            yield f"data: {json.dumps({'done': True, 'message_id': str(saved['id']), 'conversation_id': conversation_id})}\n\n"
 
             # Generate title for new conversations
             if is_new_conversation:
@@ -204,17 +248,16 @@ async def chat(body: ChatRequest, request: Request, user: dict = Depends(get_cur
                 except Exception as e:
                     logger.warning("Title generation failed: %s", e)
 
-            # Store memories scoped to user (not conversation)
-            loop = asyncio.get_event_loop()
-            loop.run_in_executor(
-                None,
-                store_memories,
+            await _persist_long_term_context(
+                pool,
+                user_id,
+                conversation_id,
                 [
                     {"role": "user", "content": body.message},
                     {"role": "assistant", "content": full_response},
                 ],
-                user_id,
             )
+            yield f"data: {json.dumps({'done': True, 'message_id': str(saved['id']), 'conversation_id': conversation_id})}\n\n"
         else:
             yield f"data: {json.dumps({'done': True, 'conversation_id': conversation_id})}\n\n"
 

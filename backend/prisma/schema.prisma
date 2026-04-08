@@ -17,6 +17,7 @@ model User {
 
   sessions      Session[]
   conversations Conversation[]
+  summaries     ConversationSummary[]
 
   @@map("users")
 }
@@ -42,8 +43,9 @@ model Conversation {
   created_at DateTime @default(now()) @db.Timestamptz()
   updated_at DateTime @default(now()) @db.Timestamptz()
 
-  user     User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user     User                 @relation(fields: [user_id], references: [id], onDelete: Cascade)
   messages Message[]
+  summary  ConversationSummary?
 
   @@index([user_id, updated_at(sort: Desc)])
   @@map("conversations")
@@ -60,4 +62,20 @@ model Message {
 
   @@index([conversation_id, created_at])
   @@map("messages")
+}
+
+model ConversationSummary {
+  conversation_id String   @id @db.Uuid
+  user_id         String   @db.Uuid
+  summary         String   @default("")
+  key_points      Json     @default("[]")
+  next_steps      String   @default("")
+  created_at      DateTime @default(now()) @db.Timestamptz()
+  updated_at      DateTime @default(now()) @db.Timestamptz()
+
+  conversation Conversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id, updated_at(sort: Desc)])
+  @@map("conversation_summaries")
 }

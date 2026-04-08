@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     DIRECT_URL: str = ""
     OPENAI_API_KEY: str = ""
+    NEO4J_URI: str = ""
+    NEO4J_USERNAME: str = ""
+    NEO4J_PASSWORD: str = ""
+    NEO4J_DATABASE: str = ""
     FRONTEND_URL: str = "http://localhost:8081"
     JWT_SECRET: str = ""
 
