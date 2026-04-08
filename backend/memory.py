@@ -185,3 +185,37 @@ def store_memories(messages: list[dict], user_id: str) -> None:
         memory.add(user_messages, user_id=user_id)
     except Exception as e:
         logger.warning("Memory store failed: %s", e)
+
+
+def store_image_memory_facts(facts: list[str], user_id: str) -> None:
+    """Persist only durable image-derived user facts."""
+    try:
+        filtered_facts: list[dict[str, str]] = []
+        blocked_phrases = (
+            "maybe",
+            "might",
+            "possibly",
+            "appears",
+            "looks like",
+            "seems",
+            "unclear",
+            "not sure",
+        )
+
+        for fact in facts:
+            cleaned = str(fact).strip()
+            if not cleaned:
+                continue
+
+            lowered = cleaned.lower()
+            if any(phrase in lowered for phrase in blocked_phrases):
+                continue
+
+            filtered_facts.append({"role": "user", "content": cleaned})
+
+        if not filtered_facts:
+            return
+
+        memory.add(filtered_facts, user_id=user_id)
+    except Exception as e:
+        logger.warning("Image memory store failed: %s", e)

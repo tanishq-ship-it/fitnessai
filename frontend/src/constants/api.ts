@@ -1,6 +1,24 @@
-// Use your computer's local IP so physical devices can reach the backend
+import Constants from "expo-constants";
+
+function getDevApiBaseUrl(): string {
+  const explicitUrl = process.env.EXPO_PUBLIC_API_BASE_URL?.trim();
+  if (explicitUrl) {
+    return explicitUrl;
+  }
+
+  const hostUri =
+    Constants.expoConfig?.hostUri ?? Constants.platform?.hostUri ?? "";
+  const host = hostUri.split(":")[0];
+
+  if (host) {
+    return `http://${host}:8000/api`;
+  }
+
+  return "http://localhost:8000/api";
+}
+
 export const API_BASE_URL = __DEV__
-  ? "http://192.168.1.5:8000/api"
+  ? getDevApiBaseUrl()
   : "https://your-production-url.com/api";
 
 export const AUTH_ENDPOINTS = {

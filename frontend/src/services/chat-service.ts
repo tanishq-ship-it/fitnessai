@@ -1,5 +1,6 @@
 import { API_BASE_URL } from "@/src/constants/api";
 import { getValidAccessToken } from "@/src/services/auth-service";
+import { ChatImageAttachment } from "@/src/types/chat";
 
 interface StreamCallbacks {
   onToken: (token: string) => void;
@@ -10,6 +11,7 @@ interface StreamCallbacks {
 export async function sendMessage(
   message: string,
   conversationId: string | null,
+  image: ChatImageAttachment | null,
   callbacks: StreamCallbacks,
 ): Promise<void> {
   let token: string;
@@ -68,6 +70,7 @@ export async function sendMessage(
     JSON.stringify({
       message,
       conversation_id: conversationId,
+      image_data_url: image?.dataUrl ?? null,
     }),
   );
 }

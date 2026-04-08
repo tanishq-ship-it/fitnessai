@@ -5,6 +5,7 @@ import { AuthResponse, User } from "@/src/types/auth";
 
 const ACCESS_TOKEN_KEY = "fitnessai_access_token";
 const REFRESH_TOKEN_KEY = "fitnessai_refresh_token";
+const API_TIMEOUT_MS = 10_000;
 
 // ── Token Storage ──
 // SecureStore works on iOS/Android. Falls back to nothing on web.
@@ -68,10 +69,24 @@ export function isTokenExpired(token: string): boolean {
 // ── API Calls ──
 
 async function apiCall<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const res = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...options.headers },
-    ...options,
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: { "Content-Type": "application/json", ...options.headers },
+      ...options,
+      signal: controller.signal,
+    });
+  } catch (error: any) {
+    if (error?.name === "AbortError") {
+      throw new Error("Request timed out. Check that the backend is reachable on your local network.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: "Request failed" }));

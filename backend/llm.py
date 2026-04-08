@@ -1,4 +1,6 @@
 import json
+import re
+from typing import Any
 from collections.abc import AsyncGenerator
 
 import httpx
@@ -27,9 +29,48 @@ Here are concise summaries of recent earlier conversations with this user:
 
 Use these summaries when the user asks what was discussed previously, what plan they were following, how they were progressing, or what to do next. Prefer the most recent relevant summary. Don't mention that you're reading stored summaries."""
 
+VISION_SECTION = """
+The user attached an image. Here is a compact analysis of what is visible:
+{vision_context}
 
-def build_system_prompt(memories_context: str = "", summaries_context: str = "") -> str:
+Use this to answer naturally. Treat uncertain observations as uncertain. Don't mention internal analysis, prompts, or model steps."""
+
+
+VISION_ANALYSIS_PROMPT = """You are analyzing a single user image for a fitness coaching assistant.
+
+First, identify the image type as one of:
+- meal
+- progress
+- form_check
+- unclear
+
+Return valid JSON only with this exact shape:
+{
+  "category": "meal|progress|form_check|unclear",
+  "summary": "short plain-text summary",
+  "observations": ["string"],
+  "uncertainties": ["string"],
+  "memory_candidates": ["string"]
+}
+
+Rules:
+- Focus only on what is visibly supported by the image.
+- If the user also provided text, use it only to guide the analysis.
+- For meals, describe likely foods and visible portion clues. Do not guess exact calories unless clearly approximate.
+- For progress photos, describe visible posture or physique observations carefully. Never guess exact body-fat percentage.
+- For form checks, identify the likely movement and visible mechanics or safety cues.
+- Keep memory_candidates extremely strict. Include only stable, durable user facts worth remembering long-term. If unsure, return [].
+- Do not include markdown fences or extra commentary."""
+
+
+def build_system_prompt(
+    memories_context: str = "",
+    summaries_context: str = "",
+    vision_context: str = "",
+) -> str:
     prompt = SYSTEM_PROMPT_BASE
+    if vision_context:
+        prompt += VISION_SECTION.format(vision_context=vision_context)
     if summaries_context:
         prompt += SUMMARIES_SECTION.format(summaries=summaries_context)
     if memories_context:
@@ -76,10 +117,11 @@ async def stream_chat_response(
     messages: list[dict],
     memories_context: str = "",
     summaries_context: str = "",
+    vision_context: str = "",
 ) -> AsyncGenerator[str, None]:
     """Stream tokens from OpenRouter. Yields content strings as they arrive."""
 
-    system_prompt = build_system_prompt(memories_context, summaries_context)
+    system_prompt = build_system_prompt(memories_context, summaries_context, vision_context)
 
     payload = {
         "model": settings.OPENROUTER_MODEL,
@@ -108,6 +150,95 @@ async def stream_chat_response(
                         yield token
                 except (json.JSONDecodeError, KeyError, IndexError):
                     continue
+
+
+def _coerce_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    cleaned = text.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    try:
+        parsed = json.loads(cleaned)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if not match:
+            return {}
+        try:
+            parsed = json.loads(match.group(0))
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
+
+async def analyze_image_input(image_data_url: str, user_message: str = "") -> dict[str, Any]:
+    guidance = user_message.strip() or "Analyze this image for a fitness coaching chat."
+
+    payload = {
+        "model": settings.OPENROUTER_VISION_MODEL,
+        "messages": [
+            {"role": "system", "content": VISION_ANALYSIS_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": guidance},
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
+                ],
+            },
+        ],
+        "stream": False,
+        "max_tokens": 500,
+    }
+    headers = {
+        "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        response = await client.post(OPENROUTER_URL, json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        content = data["choices"][0]["message"]["content"].strip()
+
+    parsed = _extract_json_object(content)
+    category = str(parsed.get("category", "unclear")).strip().lower()
+    if category not in {"meal", "progress", "form_check", "unclear"}:
+        category = "unclear"
+
+    return {
+        "category": category,
+        "summary": str(parsed.get("summary", "")).strip(),
+        "observations": _coerce_string_list(parsed.get("observations")),
+        "uncertainties": _coerce_string_list(parsed.get("uncertainties")),
+        "memory_candidates": _coerce_string_list(parsed.get("memory_candidates")),
+    }
+
+
+def format_vision_context(analysis: dict[str, Any] | None) -> str:
+    if not analysis:
+        return ""
+
+    lines = [f"Image type: {analysis.get('category', 'unclear')}"]
+
+    summary = str(analysis.get("summary", "")).strip()
+    if summary:
+        lines.append(f"Summary: {summary}")
+
+    observations = _coerce_string_list(analysis.get("observations"))
+    if observations:
+        lines.append("Observations:\n" + "\n".join(f"- {item}" for item in observations))
+
+    uncertainties = _coerce_string_list(analysis.get("uncertainties"))
+    if uncertainties:
+        lines.append("Uncertainties:\n" + "\n".join(f"- {item}" for item in uncertainties))
+
+    return "\n".join(lines)
 
 
 def format_recent_summaries(summaries: list[dict]) -> str:

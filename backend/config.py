@@ -6,6 +6,7 @@ class Settings(BaseSettings):
 
     OPENROUTER_API_KEY: str
     OPENROUTER_MODEL: str = "google/gemma-4-31b-it"
+    OPENROUTER_VISION_MODEL: str = "google/gemma-4-26b-a4b-it"
     DATABASE_URL: str
     DIRECT_URL: str = ""
     OPENAI_API_KEY: str = ""

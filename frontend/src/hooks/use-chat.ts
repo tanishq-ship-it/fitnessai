@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import { Message } from "@/src/types/chat";
+import { ChatComposerPayload, Message } from "@/src/types/chat";
 import { sendMessage } from "@/src/services/chat-service";
 import { fetchConversationMessages } from "@/src/services/conversation-service";
 
@@ -47,12 +47,13 @@ export function useChat() {
     setIsTyping(false);
   }, []);
 
-  const send = useCallback((text: string) => {
+  const send = useCallback(({ text, image }: ChatComposerPayload) => {
     const userMessage: Message = {
       id: generateId(),
       role: "user",
       content: text,
       timestamp: new Date(),
+      imageUri: image?.uri ?? null,
     };
 
     const assistantMessage: Message = {
@@ -65,7 +66,7 @@ export function useChat() {
     setMessages((prev) => [...prev, userMessage, assistantMessage]);
     setIsTyping(true);
 
-    sendMessage(text, conversationIdRef.current, {
+    sendMessage(text, conversationIdRef.current, image ?? null, {
       onToken: (token) => {
         setMessages((prev) => {
           const updated = [...prev];

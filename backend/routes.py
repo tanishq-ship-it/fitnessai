@@ -36,12 +36,14 @@ from database import (
     verify_conversation_ownership,
 )
 from llm import (
+    analyze_image_input,
+    format_vision_context,
     format_recent_summaries,
     generate_conversation_summary,
     generate_title,
     stream_chat_response,
 )
-from memory import search_memories, store_memories
+from memory import search_memories, store_image_memory_facts, store_memories
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +74,9 @@ class LogoutRequest(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message: str
+    message: str = ""
     conversation_id: str | None = None
+    image_data_url: str | None = None
 
 
 # ── Helper ──
@@ -95,17 +98,33 @@ async def _persist_long_term_context(
     user_id: str,
     conversation_id: str,
     exchange_messages: list[dict],
+    image_analysis: dict | None = None,
 ) -> None:
     try:
         await asyncio.to_thread(store_memories, exchange_messages, user_id)
     except Exception as e:
         logger.warning("Mem0 persistence failed: %s", e)
 
+    if image_analysis:
+        memory_candidates = image_analysis.get("memory_candidates", [])
+        if memory_candidates:
+            try:
+                await asyncio.to_thread(store_image_memory_facts, memory_candidates, user_id)
+            except Exception as e:
+                logger.warning("Image memory persistence failed: %s", e)
+
     try:
         history = await get_messages(pool, conversation_id)
+        summary_history = history.copy()
+        image_summary = _format_image_summary_for_summary(image_analysis)
+        if image_summary:
+            insert_at = len(summary_history)
+            if summary_history and summary_history[-1].get("role") == "assistant":
+                insert_at -= 1
+            summary_history.insert(insert_at, {"role": "user", "content": image_summary})
         existing_summary = await get_conversation_summary(pool, conversation_id)
         summary_payload = await generate_conversation_summary(
-            history,
+            summary_history,
             previous_summary=existing_summary["summary"] if existing_summary else "",
         )
         await upsert_conversation_summary(
@@ -141,6 +160,7 @@ async def _finalize_chat_response(
     user_message: str,
     assistant_message: str,
     is_new_conversation: bool,
+    image_analysis: dict | None = None,
 ) -> None:
     if is_new_conversation:
         try:
@@ -157,7 +177,60 @@ async def _finalize_chat_response(
             {"role": "user", "content": user_message},
             {"role": "assistant", "content": assistant_message},
         ],
+        image_analysis,
     )
+
+
+def _format_user_message_for_storage(message: str, has_image: bool) -> str:
+    text = message.strip()
+    if has_image and text:
+        return f"{text}\n\n[Image attached]"
+    if has_image:
+        return "[Image attached]"
+    return text
+
+
+def _build_memory_query(message: str, image_analysis: dict | None) -> str:
+    text = message.strip()
+    if text:
+        return text
+    if not image_analysis:
+        return ""
+    summary = str(image_analysis.get("summary", "")).strip()
+    if summary:
+        return summary
+    observations = image_analysis.get("observations", [])
+    return observations[0] if observations else ""
+
+
+def _build_title_seed(message: str, image_analysis: dict | None) -> str:
+    text = message.strip()
+    if text:
+        return text
+    if not image_analysis:
+        return "Image chat"
+    category = str(image_analysis.get("category", "")).replace("_", " ").strip()
+    return f"{category.title()} Check" if category else "Image chat"
+
+
+def _format_image_summary_for_summary(image_analysis: dict | None) -> str:
+    if not image_analysis:
+        return ""
+
+    parts = []
+    category = str(image_analysis.get("category", "")).replace("_", " ").strip()
+    if category:
+        parts.append(f"Attached image type: {category}.")
+
+    summary = str(image_analysis.get("summary", "")).strip()
+    if summary:
+        parts.append(f"Image summary: {summary}")
+
+    observations = image_analysis.get("observations", [])
+    if observations:
+        parts.append("Image observations: " + "; ".join(observations[:3]))
+
+    return " ".join(parts).strip()
 
 
 # ── Health ──
@@ -241,6 +314,15 @@ async def me(user: dict = Depends(get_current_user)):
 async def chat(body: ChatRequest, request: Request, user: dict = Depends(get_current_user)):
     pool = request.app.state.db_pool
     user_id = user["user_id"]
+    message_text = body.message.strip()
+    has_image = bool(body.image_data_url)
+
+    if not message_text and not has_image:
+        raise HTTPException(400, "Message or image is required")
+    if has_image and not body.image_data_url.startswith("data:image/"):
+        raise HTTPException(400, "Only image uploads are supported")
+    if has_image and len(body.image_data_url) > 8_000_000:
+        raise HTTPException(400, "Image is too large")
 
     # Resolve or create conversation
     is_new_conversation = False
@@ -253,8 +335,20 @@ async def chat(body: ChatRequest, request: Request, user: dict = Depends(get_cur
         conversation_id = str(conv["id"])
         is_new_conversation = True
 
+    vision_analysis = None
+    if has_image:
+        try:
+            vision_analysis = await analyze_image_input(body.image_data_url, message_text)
+        except Exception:
+            logger.exception("Failed to analyze image input")
+            raise HTTPException(502, "Image analysis failed")
+
+    stored_user_message = _format_user_message_for_storage(message_text, has_image)
+    memory_query = _build_memory_query(message_text, vision_analysis)
+    title_seed = _build_title_seed(message_text, vision_analysis)
+
     try:
-        await save_message(pool, conversation_id, "user", body.message)
+        await save_message(pool, conversation_id, "user", stored_user_message)
         history = await get_messages(pool, conversation_id)
         recent_summaries = await get_recent_conversation_summaries(
             pool,
@@ -267,13 +361,19 @@ async def chat(body: ChatRequest, request: Request, user: dict = Depends(get_cur
         return {"error": str(e)}
 
     # Search memories scoped to user (not conversation)
-    memories_context = search_memories(body.message, user_id)
+    memories_context = search_memories(memory_query or stored_user_message, user_id)
     summaries_context = format_recent_summaries(recent_summaries)
+    vision_context = format_vision_context(vision_analysis)
 
     async def event_stream():
         full_response = ""
         try:
-            async for token in stream_chat_response(history, memories_context, summaries_context):
+            async for token in stream_chat_response(
+                history,
+                memories_context,
+                summaries_context,
+                vision_context,
+            ):
                 full_response += token
                 yield f"data: {json.dumps({'token': token})}\n\n"
         except Exception as e:
@@ -287,9 +387,10 @@ async def chat(body: ChatRequest, request: Request, user: dict = Depends(get_cur
                     pool,
                     user_id,
                     conversation_id,
-                    body.message,
+                    title_seed,
                     full_response,
                     is_new_conversation,
+                    vision_analysis,
                 )
             )
         else:
