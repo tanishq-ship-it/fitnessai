@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Awaitable
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -45,6 +46,7 @@ from memory import search_memories, store_memories
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
@@ -116,6 +118,46 @@ async def _persist_long_term_context(
         )
     except Exception as e:
         logger.warning("Conversation summary persistence failed: %s", e)
+
+
+def _schedule_background_task(coro: Awaitable[None]) -> None:
+    task = asyncio.create_task(coro)
+    BACKGROUND_TASKS.add(task)
+
+    def _on_done(completed: asyncio.Task) -> None:
+        BACKGROUND_TASKS.discard(completed)
+        try:
+            completed.result()
+        except Exception as e:
+            logger.warning("Background task failed: %s", e)
+
+    task.add_done_callback(_on_done)
+
+
+async def _finalize_chat_response(
+    pool,
+    user_id: str,
+    conversation_id: str,
+    user_message: str,
+    assistant_message: str,
+    is_new_conversation: bool,
+) -> None:
+    if is_new_conversation:
+        try:
+            title = await generate_title(user_message)
+            await update_conversation_title(pool, conversation_id, title)
+        except Exception as e:
+            logger.warning("Title generation failed: %s", e)
+
+    await _persist_long_term_context(
+        pool,
+        user_id,
+        conversation_id,
+        [
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": assistant_message},
+        ],
+    )
 
 
 # ── Health ──
@@ -239,25 +281,17 @@ async def chat(body: ChatRequest, request: Request, user: dict = Depends(get_cur
 
         if full_response:
             saved = await save_message(pool, conversation_id, "assistant", full_response)
-
-            # Generate title for new conversations
-            if is_new_conversation:
-                try:
-                    title = await generate_title(body.message)
-                    await update_conversation_title(pool, conversation_id, title)
-                except Exception as e:
-                    logger.warning("Title generation failed: %s", e)
-
-            await _persist_long_term_context(
-                pool,
-                user_id,
-                conversation_id,
-                [
-                    {"role": "user", "content": body.message},
-                    {"role": "assistant", "content": full_response},
-                ],
-            )
             yield f"data: {json.dumps({'done': True, 'message_id': str(saved['id']), 'conversation_id': conversation_id})}\n\n"
+            _schedule_background_task(
+                _finalize_chat_response(
+                    pool,
+                    user_id,
+                    conversation_id,
+                    body.message,
+                    full_response,
+                    is_new_conversation,
+                )
+            )
         else:
             yield f"data: {json.dumps({'done': True, 'conversation_id': conversation_id})}\n\n"
 
